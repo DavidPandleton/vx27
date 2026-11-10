@@ -1,0 +1,52 @@
+#version 450
+// vx27 BP3 matvec, tiled: satu workgroup(64) = 1 baris, semua token B.
+// Bobot: grup BP3_128 = 12 u32 (3 plane x 4) + skala fp16 di low-16 bit u32 ke-12.
+// Aktivasi float langsung (tanpa kuantisasi), cocok untuk prefill/decode.
+layout(local_size_x = 64) in;
+layout(binding = 0) buffer W { uint w[]; };
+layout(binding = 1) buffer X { float x[]; };
+layout(binding = 2) buffer Y { float y[]; };
+layout(push_constant) uniform P { uint B; uint ncols; uint rows; } pc;
+shared float part[64];
+
+float bpgroup(uint wo, uint qo) {
+    float qd = unpackHalf2x16(w[wo + 12u] & 0xFFFFu).x;
+    float acc = 0.0;
+    for (uint j = 0u; j < 4u; j++) {
+        uint p0 = w[wo + 0u * 4u + j];
+        uint p1 = w[wo + 1u * 4u + j];
+        uint p2 = w[wo + 2u * 4u + j];
+        for (uint k = 0u; k < 32u; k += 8u) {
+            uint idx = j * 32u + k;
+            for (uint b = 0u; b < 8u; b++) {
+                uint u = bitfieldExtract(p0, int(k + b), 1)
+                       | (bitfieldExtract(p1, int(k + b), 1) << 1)
+                       | (bitfieldExtract(p2, int(k + b), 1) << 2);
+                int qv = int(u) >= 4 ? int(u) - 8 : int(u);
+                acc += float(qv) * x[qo + idx + b];
+            }
+        }
+    }
+    return qd * acc;
+}
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    if (row >= pc.rows) return;
+    uint lid = gl_LocalInvocationID.x;
+    uint ng = pc.ncols / 128u;
+    uint wo_row = row * ng * 13u;
+    for (uint t = 0u; t < pc.B; t++) {
+        uint qo = t * pc.ncols;
+        float acc = 0.0;
+        for (uint g = lid; g < ng; g += 64u)
+            acc += bpgroup(wo_row + g * 13u, qo + g * 128u);
+        part[lid] = acc;
+        barrier();
+        for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+            if (lid < stride) part[lid] += part[lid + stride];
+            barrier();
+        }
+        if (lid == 0u) y[row * pc.B + t] = part[0];
+    }
+}

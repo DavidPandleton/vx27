@@ -1,0 +1,9 @@
+{
+  "model": "Qwen3.8-27B Heretic-Abliterated text-only",
+  "hidden": 5120, "layers": 64, "full_interval": 4,
+  "vocab": 248320, "ffn": 17408, "mtp_layers": 1,
+  "core_layers": "0-51", "core_budget_gb": 11.2,
+  "head_layers": "52-63+lm_head+mtp", "head_budget_gb": 2.8,
+  "kv_budget_gb": 2.5, "ctx_default": 65536, "ctx_stretch": 131072,
+  "backbone_est_B": 22.314, "core_params_B": 18.130, "head_params_B": 6.842
+}

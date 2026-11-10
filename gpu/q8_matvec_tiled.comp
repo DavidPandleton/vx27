@@ -1,0 +1,48 @@
+#version 450
+// vx27 Q8_K matvec, tiled v1: satu workgroup(64) = 1 baris, B token.
+// Layout Q8_K per blok (73 u32): [0]=d(float), [1..64]=qs 256x int8, [65..72]=bsums (diabaikan).
+layout(local_size_x = 64) in;
+layout(binding = 0) buffer W { uint w[]; };
+layout(binding = 1) buffer Q { uint q[]; };
+layout(binding = 2) buffer Y { float y[]; };
+layout(push_constant) uniform P { uint B; uint nblocks; uint rows; } pc;
+shared float part[64];
+
+int s8(uint word, uint k) {
+    uint b = (word >> (k * 8u)) & 0xFFu;
+    return int(b << 24u) >> 24;
+}
+
+float sub_term(uint wo, uint qo) {
+    float dw = uintBitsToFloat(w[wo]);
+    float dq = uintBitsToFloat(q[qo]);
+    int sumi = 0;
+    // 256 pasang int8 = 64 word per sisi
+    for (uint k = 0u; k < 64u; k++) {
+        uint ww = w[wo + 1u + k];
+        uint qq = q[qo + 1u + k];
+        sumi += s8(ww, 0u) * s8(qq, 0u) + s8(ww, 1u) * s8(qq, 1u)
+              + s8(ww, 2u) * s8(qq, 2u) + s8(ww, 3u) * s8(qq, 3u);
+    }
+    return dw * dq * float(sumi);
+}
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    if (row >= pc.rows) return;
+    uint lid = gl_LocalInvocationID.x;
+    uint wo_row = row * pc.nblocks * 73u;
+    for (uint t = 0u; t < pc.B; t++) {
+        uint qo = t * pc.nblocks * 73u;
+        float acc = 0.0;
+        for (uint s = lid; s < pc.nblocks; s += 64u)
+            acc += sub_term(wo_row + s * 73u, qo + s * 73u);
+        part[lid] = acc;
+        barrier();
+        for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+            if (lid < stride) part[lid] += part[lid + stride];
+            barrier();
+        }
+        if (lid == 0u) y[row * pc.B + t] = part[0];
+    }
+}

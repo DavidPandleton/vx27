@@ -1,0 +1,71 @@
+#version 450
+// vx27 tiling v1: one workgroup (64 threads) = one row, all B tokens.
+// Matches PLAN Tahap 1 (minus 8-accumulator unroll; correctness first).
+layout(local_size_x = 64) in;
+layout(binding = 0) buffer W { uint w[]; };
+layout(binding = 1) buffer Q { uint q[]; };
+layout(binding = 2) buffer Y { float y[]; };
+layout(push_constant) uniform P { uint B; uint nblocks; uint rows; } pc;
+shared float part[64];
+
+uint byte_at(uint a, uint c) {
+    return (w[a + c / 4u] >> ((c % 4u) * 8u)) & 0xFFu;
+}
+int s8(uint word, uint k) {
+    uint b = (word >> (k * 8u)) & 0xFFu;
+    return int(b << 24u) >> 24;
+}
+float sub_term(uint wo, uint qo, uint sub) {
+    uint b = sub / 8u;
+    uint h = sub % 2u;
+    uint j = (sub % 8u) / 2u;
+    uint si = sub % 8u;
+    wo += b * 36u;
+    qo += b * 73u;
+    vec2 dd = unpackHalf2x16(w[wo]);
+    float qd = uintBitsToFloat(q[qo]);
+    uint sc, mn;
+    if (si < 4u) {
+        sc = byte_at(wo + 1u, si) & 63u;
+        mn = byte_at(wo + 1u, si + 4u) & 63u;
+    } else {
+        sc = (byte_at(wo + 1u, si + 4u) & 15u) |
+             ((byte_at(wo + 1u, si - 4u) >> 6u) << 4u);
+        mn = (byte_at(wo + 1u, si + 4u) >> 4u) |
+             ((byte_at(wo + 1u, si) >> 6u) << 4u);
+    }
+    uint qs = wo + 4u + j * 8u;
+    uint q8w = qo + 1u + j * 16u + h * 8u;
+    int sumi = 0, msum = 0;
+    for (uint k = 0u; k < 32u; k++) {
+        uint v = (w[qs + k / 4u] >> ((k % 4u) * 8u + h * 4u)) & 15u;
+        int x = s8(q[q8w + k / 4u], k % 4u);
+        sumi += int(v) * x;
+        msum += x;
+    }
+    return qd * (dd.x * float(sc) * float(sumi) -
+                 dd.y * float(mn) * float(msum));
+}
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    if (row >= pc.rows) return;
+    uint lid = gl_LocalInvocationID.x;
+    uint nterms = pc.nblocks * 8u;
+    uint wo_row = row * pc.nblocks * 36u;
+    for (uint t = 0u; t < pc.B; t++) {
+        uint qo = t * pc.nblocks * 73u;
+        float acc = 0.0;
+        for (uint s = lid; s < nterms; s += 64u)
+            acc += sub_term(wo_row, qo, s);
+        part[lid] = acc;
+        barrier();
+        // reduction 64 -> 1
+        for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+            if (lid < stride) part[lid] += part[lid + stride];
+            barrier();
+        }
+        if (lid == 0u) y[row * pc.B + t] = part[0];
+        barrier();
+    }
+}

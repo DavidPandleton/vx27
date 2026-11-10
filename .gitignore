@@ -1,0 +1,26 @@
+# Bobot (download/forge ulang; total >60GB — TIDAK ikut push)
+build/model-*.safetensors
+build/vx27_core.vx27
+build/vx27_head.vx27
+build/*_core.vx27
+build/*_head.vx27
+build/test_*.vx27
+build/sample_*.vx27
+build/real_*.vx27
+build/shard0_*.vx27
+build/dbg_*.vx27
+build/test_st*.safetensors
+build/test_cfg_*.json
+build/sample_real5120.safetensors
+
+# Build artifacts (regenerable via Makefile)
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+build/*.spv
+build/bench/
+
+# Session / local
+*.log
